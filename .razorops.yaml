@@ -1,0 +1,53 @@
+global:
+  runner:
+    os_image: ubuntu
+
+tasks:
+  unit-tests:
+    runner: razorci/python:3.9
+    steps:
+    - checkout
+    - cache/pull: pip-deps-{{ checksum "requirements.txt" }}
+    - commands: 
+      - python -c 'import site; print(site.getsitepackages())'
+      - pip install -r requirements.txt
+    - commands:
+      - python test.py
+      - export PATH="$(python3 -m site --user-base)/bin:$PATH"
+      # generate coverage reports
+      - coverage run test.py
+      - coverage report && coverage html
+    - cache/push:
+        key: pip-deps-{{ checksum "requirements.txt" }}
+        paths:
+        - /usr/local/lib/python3.9/site-packages
+    - reports/junit: test-reports/*.xml
+    - reports/html: 
+        dir: htmlcov
+
+  sast-with-snyk:
+    depends: [unit-tests]
+    steps:
+    - checkout
+    - commands:
+      - |
+        # Installing synk
+        curl --compressed https://static.snyk.io/cli/latest/snyk-linux -o snyk
+        chmod +x ./snyk
+
+        docker build -t kshyam/python-flask-sast:${CI_COMMIT_SHA:0:8} .
+        ./snyk container monitor -d kshyam/python-flask-sast:${CI_COMMIT_SHA:0:8} --file=./Dockerfile
+
+  sast-with-trivy:
+    depends: [unit-tests]
+    steps:
+    - checkout
+    - commands:
+      - |
+        wget -q https://github.com/aquasecurity/trivy/releases/download/v0.30.3/trivy_0.30.3_Linux-64bit.deb
+        sudo dpkg -i trivy_0.30.3_Linux-64bit.deb
+        
+        docker build -t kshyam/python-flask-sast:${CI_COMMIT_SHA:0:8} .
+        trivy image --format template --template "@junit.tpl" -o junit_report.xml kshyam/python-flask-sast:${CI_COMMIT_SHA:0:8}
+    - reports/junit:
+        paths: ["junit_report.xml"]
